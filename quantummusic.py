@@ -39,6 +39,8 @@ from qiskit_aer import AerSimulator  # Updated import for Qiskit Aer
 from qiskit.circuit import ParameterVector
 from qiskit.visualization import plot_histogram
 import optuna
+import concurrent.futures
+
 
 from scipy.signal import butter, filtfilt
 
@@ -4397,52 +4399,85 @@ def remove_drone(audio_data, sr, search_duration=2.0, q_factor=30.0):
 import os
 import shutil
 
+import os
+import shutil
+import concurrent.futures
+
+def process_file(file, training_dir, output_dir, grade_single_file):
+    """
+    Helper function to process a single file: runs grade_single_file and then moves the file.
+    """
+    file_path = os.path.join(training_dir, file)
+    print(f"Processing {file}...")
+    try:
+        # This call is assumed to do the DB insertion internally:
+        result = grade_single_file(file)
+        # Move the file to output_dir after processing
+        shutil.move(file_path, os.path.join(output_dir, file))
+        print(f"Processed & moved {file} -> {output_dir}")
+        return result
+    except Exception as e:
+        print(f"Error processing {file}: {e}")
+        return None
+
 def process_all_files(
     grade_single_file,
     training_dir="data/trainingdata",
     output_dir="data/trainingdataoutput",
+    num_workers=8
 ):
     """
     Processes all .wav files in `training_dir` using the provided
-    `grade_single_file_func(file_name)` function (which already inserts
-    its results into the database), then moves the processed files to `output_dir`.
+    `grade_single_file` function (which already inserts its results into the database),
+    then moves the processed files to `output_dir` using parallel execution.
     """
     if not callable(grade_single_file):
-        raise ValueError("grade_single_file_func must be a callable that accepts a filename.")
+        raise ValueError("grade_single_file must be a callable that accepts a filename.")
 
+    # Ensure the output directory exists
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    # List only .wav files
     files = [f for f in os.listdir(training_dir) if f.endswith(".wav")]
     if not files:
         print(f"No new .wav files found in {training_dir}")
         return
 
-    for file in files:
-        file_path = os.path.join(training_dir, file)
-        print(f"Processing {file}...")
-
-        try:
-            # This call is assumed to do the DB insertion internally:
-            result = grade_single_file(file)
-
-            # Move the file to output_dir after processing
-            shutil.move(file_path, os.path.join(output_dir, file))
-            print(f"Processed & moved {file} -> {output_dir}")
-
-        except Exception as e:
-            print(f"Error processing {file}: {e}")
+    # Use ProcessPoolExecutor to process files in parallel
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+        # Submit each file as a separate job
+        futures = {
+            executor.submit(process_file, file, training_dir, output_dir, grade_single_file): file
+            for file in files
+        }
+        # Wait for each future to complete and handle exceptions if any
+        for future in concurrent.futures.as_completed(futures):
+            file = futures[future]
+            try:
+                _ = future.result()
+            except Exception as exc:
+                print(f"Error processing {file}: {exc}")
 
     print("All .wav files processed.")
-
 
 # %%
 # usage:
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Process audio files in parallel.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Number of parallel worker processes (e.g., 8 to 16)"
+    )
+    args = parser.parse_args()
+
     process_all_files(
         grade_single_file,
         training_dir="data/trainingdata",
-        output_dir="data/trainingdataoutput"
+        output_dir="data/trainingdataoutput",
+        num_workers=args.workers
     )
-
-
